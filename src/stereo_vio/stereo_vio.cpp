@@ -61,6 +61,7 @@ void StereoVio::process_measurements(const ros::Time &image_stamp,
     if (x_window_.empty())
     {
         x_window_.emplace_back();
+        x_window_.back().stamp = image_stamp;
 
         triangulate_points();
 
@@ -96,6 +97,7 @@ void StereoVio::process_measurements(const ros::Time &image_stamp,
     {
         // State propagation
         x_window_.push_back(x_window_.back());
+        x_window_.back().stamp = image_stamp;
 
         if (initialized_)
         {
@@ -107,10 +109,36 @@ void StereoVio::process_measurements(const ros::Time &image_stamp,
             x_window_.back().v_world_body() += -9.81 * Eigen::Vector3d::UnitZ() * dt
                                                + x_window_.back().q_world_body() * u_window_.back().beta();
             x_window_.back().q_world_body() = x_window_.back().q_world_body() * u_window_.back().gamma();
+
+            std::vector<CameraMeasurement> removed_measurements(0);
+            if (measurements_window_.size() > N_KEYFRAMES)
+            {
+                for (size_t m_id = 0; m_id < measurements_window_[N_KEYFRAMES].size(); ++m_id)
+                {
+                    for (size_t state_id = 0; state_id < N_KEYFRAMES; ++state_id)
+                    {
+                        if (measurements_window_[N_KEYFRAMES][m_id].is_tracked())
+                            continue;
+
+                        removed_measurements.push_back(measurements_window_[state_id][m_id]);
+                        measurements_window_[state_id][m_id].set_invalid();
+                        measurements_window_[state_id][m_id].landmark_id = -1;
+                    }
+                }
+                map_.notify_observations_removal(removed_measurements);
+            }
+        }
+
+        optimize();
+        triangulate_points();
+
+        if (!initialized_ && x_window_.size() == 10)
+        {
+            initialize();
         }
 
         // Remove frames (oldest if the oldest in the sliding window is no keyframe and oldest in sw otherwise).
-        while (initialized_ && x_window_.size() > OPT_WINDOW_SIZE)
+        while (initialized_ && x_window_.size() >= OPT_WINDOW_SIZE)
         {
 #if USE_KFS
             size_t tracked_cnt = 0;
@@ -122,7 +150,7 @@ void StereoVio::process_measurements(const ros::Time &image_stamp,
                 }
             }
 
-            if (tracked_cnt < FEATURES_PER_IMAGE / 2)
+            if (tracked_cnt < 5)
             {
                 // is keyframe
                 map_.notify_observations_removal(measurements_window_.front());
@@ -133,32 +161,25 @@ void StereoVio::process_measurements(const ros::Time &image_stamp,
             else
             {
                 // is not keyframe
-                std::vector<CameraMeasurement> &prev_measurements = measurements_window_[N_KEYFRAMES];
-                std::vector<CameraMeasurement> &curr_measurements = measurements_window_[N_KEYFRAMES + 1];
+                std::vector<CameraMeasurement> &prev_measurements = measurements_window_[N_KEYFRAMES - 1];
+                std::vector<CameraMeasurement> &curr_measurements = measurements_window_[N_KEYFRAMES];
                 for (size_t m_id = 0; m_id < FEATURES_PER_IMAGE; ++m_id)
                 {
                     if (!prev_measurements[m_id].is_tracked() && curr_measurements[m_id].is_tracked())
                     {
                         curr_measurements[m_id].set_initialized();
+
+                        for (size_t state_id = 0; state_id < N_KEYFRAMES - 1; ++state_id)
+                        {
+                            measurements_window_[state_id][m_id].set_invalid();
+                        }
                     }
                 }
 
-                u_window_[N_KEYFRAMES + 1].stamps.insert(u_window_[N_KEYFRAMES + 1].stamps.end(),
-                                                         u_window_[N_KEYFRAMES].stamps.begin(),
-                                                         u_window_[N_KEYFRAMES].stamps.end());
-                u_window_[N_KEYFRAMES + 1].measurements.insert(u_window_[N_KEYFRAMES + 1].measurements.end(),
-                                                               u_window_[N_KEYFRAMES].measurements.begin(),
-                                                               u_window_[N_KEYFRAMES].measurements.end());
-
-                integrator_.u() = u_window_[N_KEYFRAMES + 1];
-                integrator_.x() = x_window_[N_KEYFRAMES + 1];
-                integrator_.pre_integrate();
-                u_window_[N_KEYFRAMES + 1] = integrator_.u();
-
-                map_.notify_observations_removal(measurements_window_[N_KEYFRAMES]);
-                x_window_.erase(x_window_.begin() + N_KEYFRAMES);
-                measurements_window_.erase(measurements_window_.begin() + N_KEYFRAMES);
-                u_window_.erase(u_window_.begin() + N_KEYFRAMES);
+                map_.notify_observations_removal(measurements_window_[N_KEYFRAMES - 1]);
+                x_window_.erase(x_window_.begin() + N_KEYFRAMES - 1);
+                measurements_window_.erase(measurements_window_.begin() + N_KEYFRAMES - 1);
+                u_window_.erase(u_window_.begin() + N_KEYFRAMES - 1);
             }
 #else
             map_.notify_observations_removal(measurements_window_.front());
@@ -167,19 +188,7 @@ void StereoVio::process_measurements(const ros::Time &image_stamp,
             u_window_.erase(u_window_.begin());
 #endif
         }
-
-        optimize();
-        triangulate_points();
-
-        if (!initialized_ && x_window_.size() == 10)
-        {
-            initialize();
-        }
     }
-
-    const auto &end = ros::Time::now();
-
-    ROS_INFO("Processing Time: %fms", (end - start).toSec() * 1e3);
 }
 
 void StereoVio::initialize()
@@ -274,6 +283,10 @@ void StereoVio::optimize()
         {
             int landmark_id = measurements_window_[state_id][obs_id].landmark_id;
 
+
+            if (measurements_window_[state_id][obs_id].is_invalid())
+                continue;
+
             if (landmark_id < 0)
                 continue;
 
@@ -310,8 +323,9 @@ void StereoVio::optimize()
     ceres::Solver::Options options;
     options.num_threads = 4;
     options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
-    //options.max_num_iterations = 5;
-    // options.max_solver_time_in_seconds = 0.2;
+    options.trust_region_strategy_type = ceres::DOGLEG;
+    options.max_num_iterations = 8;
+    options.max_solver_time_in_seconds = 0.04;
 
     // create summars
     ceres::Solver::Summary summary;
@@ -333,13 +347,13 @@ void StereoVio::process_image(const cv::Mat &image0, const cv::Mat &image1)
     tracker_.process_image_pair(image0, image1);
     // Get measurements
     std::vector<CameraMeasurement> new_measurements = tracker_.curr_measurements();
-
     for (size_t i = 0; i < new_measurements.size(); ++i)
     {
         if (new_measurements[i].is_tracked())
         {
             new_measurements[i].landmark_id = measurements_window_.back()[i].landmark_id;
         }
+
     }
 
     map_.notify_observations(new_measurements);
@@ -362,11 +376,6 @@ void StereoVio::triangulate_points()
             continue;
 
         const Eigen::Vector3d l_b = measurement.stereo_triangulate(stereo_camera_);
-        const Eigen::Vector3d l_c0 =
-                stereo_camera_.cam0.q_body_cam.conjugate() * (l_b - stereo_camera_.cam0.t_body_cam);
-
-        if (l_c0.z() < 0)
-            continue;
 
         measurement.landmark_id = map_.add_landmark(
                 x_window_.back().q_world_body() * l_b + x_window_.back().t_world_body());
@@ -379,14 +388,22 @@ void StereoVio::triangulate_points()
 
 void StereoVio::visualize()
 {
-#if 0
-    visualize_landmarks();
-    visualize_stereo_images();
-#endif
 
 #if 1
     if (initialized_)
     {
+//        std::ofstream trajectory_file;
+//
+//        trajectory_file.open("/home/marc/catkin_ws/src/stereo_vio/result.txt", std::ios::app);
+//        trajectory_file << std::setprecision(18) << std::fixed;
+//        trajectory_file << x_window_.back().stamp.toSec() * 1e-9 << "e+09 "
+//                        << x_window_.back().t_world_body().x() << " " << x_window_.back().t_world_body().y() << " "
+//                        << x_window_.back().t_world_body().z() << " "
+//                        << x_window_.back().q_world_body().x() << " " << x_window_.back().q_world_body().y() << " "
+//                        << x_window_.back().q_world_body().z() << " " << x_window_.back().q_world_body().w()
+//                        << std::endl;
+//        trajectory_file.close();
+
         visualize_path();
         visualize_landmarks();
     }

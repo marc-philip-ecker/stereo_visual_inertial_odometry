@@ -25,9 +25,11 @@ int main(int argc, char **argv)
     ros::NodeHandle n;
 
     // Open ROS Bag
-    ROS_INFO("Open ROS Bag...");
+    std::stringstream bag_stream;
+    bag_stream << "/home/marc/Downloads/MH_01_easy.bag";
+    std::cout << bag_stream.str() << std::endl;
     rosbag::Bag bag;
-    bag.open("/home/marc/Downloads/MH_04_difficult.bag", rosbag::BagMode::Read);
+    bag.open(bag_stream.str(), rosbag::BagMode::Read);
 
     // Read gt
     rosbag::View gt_view(bag, rosbag::TopicQuery("/leica/position"));
@@ -136,11 +138,6 @@ int main(int argc, char **argv)
     size_t img_left_id = 0;
     size_t img_right_id = 0;
 
-    stamp_left.erase(stamp_left.begin());
-    stamp_right.erase(stamp_right.begin());
-    images_left.erase(images_left.begin());
-    images_right.erase(images_right.begin());
-
     size_t calls = 0;
     while (img_left_id != images_left.size() && img_right_id != images_right.size())
     {
@@ -177,7 +174,7 @@ int main(int argc, char **argv)
         vio.process_measurements(stamp_left[img_left_id], images_left[img_left_id], images_right[img_right_id],
                                  input_imu_stamps, u_vector_in);
         vio.visualize();
-        gt_pub.publish(path);
+        //gt_pub.publish(path);
 
         img_left_id++;
         img_right_id++;

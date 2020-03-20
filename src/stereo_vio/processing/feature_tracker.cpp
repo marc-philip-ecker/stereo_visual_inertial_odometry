@@ -15,7 +15,7 @@ FeatureTracker::FeatureTracker(const StereoCamera &stereo_camera, size_t points_
         points_per_image_(points_per_image),
         point_displacement_(point_displacement),
         epipolar_outlier_threshold_(epipolar_outlier_threshold),
-        enable_visualization_(false),
+        enable_visualization_(true),
         corner_sub_pix_crit_(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 20, 0.03)
 {
 
@@ -92,11 +92,24 @@ void FeatureTracker::process_image_pair(const cv::Mat &image0, const cv::Mat &im
                 curr_measurements_[i].z0 = Eigen::Vector2d(new_points0.front().x, new_points0.front().y);
                 curr_measurements_[i].z1 = Eigen::Vector2d(new_points1.front().x, new_points1.front().y);
 
-                if (curr_measurements_[i].check_epipolar_constraint(stereo_camera_, epipolar_outlier_threshold_))
-                {
-                    curr_measurements_[i].set_tracked();
-                }
-                else
+                const Eigen::Vector3d l_b = curr_measurements_[i].stereo_triangulate(stereo_camera_);
+
+                const Eigen::Vector3d l_c0 =
+                        stereo_camera_.cam0.q_body_cam.conjugate() * (l_b - stereo_camera_.cam0.t_body_cam);
+                const Eigen::Vector3d l_c1 =
+                        stereo_camera_.cam1.q_body_cam.conjugate() * (l_b - stereo_camera_.cam1.t_body_cam);
+
+                const Eigen::Vector2d p0_hat = l_c0.block<2, 1>(0, 0) / l_c0.z();
+                const Eigen::Vector2d p1_hat = l_c1.block<2, 1>(0, 0) / l_c1.z();
+
+                const Eigen::Vector2d z0_hat = stereo_camera_.cam0.meter_to_pixel(p0_hat);
+                const Eigen::Vector2d z1_hat = stereo_camera_.cam1.meter_to_pixel(p1_hat);
+
+                const double e0 = (z0_hat - curr_measurements_[i].z0).norm();
+                const double e1 = (z1_hat - curr_measurements_[i].z1).norm();
+
+                if ((!curr_measurements_[i].check_epipolar_constraint(stereo_camera_, epipolar_outlier_threshold_))
+                    || e0 > 3 || e1 > 3 || l_c0.z() < 1e-3 || l_c1.z() < 1e-3)
                 {
                     curr_measurements_[i].set_invalid();
                     points_required++;
@@ -112,6 +125,8 @@ void FeatureTracker::process_image_pair(const cv::Mat &image0, const cv::Mat &im
 
                     continue;
                 }
+
+                curr_measurements_[i].set_tracked();
 
                 // Update mask that marks valid point areas
                 cv::Point2i coordinate_lower_bound(round(curr_measurements_[i].z0_dist.x() - point_displacement_),
@@ -205,8 +220,39 @@ void FeatureTracker::update_points(const cv::Mat &image0,
             measurement.z0 = Eigen::Vector2d(new_points0.front().x, new_points0.front().y);
             measurement.z1 = Eigen::Vector2d(new_points1.front().x, new_points1.front().y);
 
-            //if (measurement.check_epipolar_constraint(stereo_camera_, epipolar_outlier_threshold_))
-                measurement.set_initialized();
+
+            const Eigen::Vector3d l_b = measurement.stereo_triangulate(stereo_camera_);
+
+            const Eigen::Vector3d l_c0 =
+                    stereo_camera_.cam0.q_body_cam.conjugate() * (l_b - stereo_camera_.cam0.t_body_cam);
+            const Eigen::Vector3d l_c1 =
+                    stereo_camera_.cam1.q_body_cam.conjugate() * (l_b - stereo_camera_.cam1.t_body_cam);
+
+            const Eigen::Vector2d p0_hat = l_c0.block<2, 1>(0, 0) / l_c0.z();
+            const Eigen::Vector2d p1_hat = l_c1.block<2, 1>(0, 0) / l_c1.z();
+
+            const Eigen::Vector2d z0_hat = stereo_camera_.cam0.meter_to_pixel(p0_hat);
+            const Eigen::Vector2d z1_hat = stereo_camera_.cam1.meter_to_pixel(p1_hat);
+
+            const double e0 = (z0_hat - measurement.z0).norm();
+            const double e1 = (z1_hat - measurement.z1).norm();
+
+            if ((!measurement.check_epipolar_constraint(stereo_camera_, epipolar_outlier_threshold_))
+                || e0 > 3 || e1 > 3 || l_c0.z() < 1e-3 || l_c1.z() < 1e-3)
+            {
+                measurement.set_invalid();
+
+                new_points0_dist.erase(new_points0_dist.begin());
+                new_points1_dist.erase(new_points1_dist.begin());
+
+                new_points0.erase(new_points0.begin());
+                new_points1.erase(new_points1.begin());
+
+                status.erase(status.begin());
+
+                continue;
+            }
+            measurement.set_initialized();
         }
 
         new_points0_dist.erase(new_points0_dist.begin());

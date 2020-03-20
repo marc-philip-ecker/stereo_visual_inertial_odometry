@@ -7,6 +7,7 @@
 #define SRC_STATE_H
 
 #include <Eigen/Dense>
+#include <ros/ros.h>
 #include <stereo_vio/model/model.h>
 
 #define STATE_SIZE (16)
@@ -14,6 +15,8 @@
 class State : public Eigen::Matrix<double, STATE_SIZE, 1>
 {
 public:
+    ros::Time stamp;
+
     State();
 
     double *t_world_body_ptr();

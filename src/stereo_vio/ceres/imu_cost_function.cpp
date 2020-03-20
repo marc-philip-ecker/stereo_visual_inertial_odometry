@@ -59,7 +59,7 @@ bool ImuCostFunction::Evaluate(const double *const *parameters, double *residual
 
     r_t = R_bk_w * (t_w_bkp1 - t_w_bk - 0.5 * g_ * dt_ * dt_ - v_w_bk * dt_) - alpha_corrected;
     r_v = R_bk_w * (v_w_bkp1 - g_ * dt_ - v_w_bk) - beta_corrected;
-    r_q = 2 * (q_w_bk.conjugate() * q_w_bkp1 * gamma_corrected.conjugate()).vec();
+    r_q = 2 * (q_w_bkp1.conjugate() * q_w_bk * gamma_corrected).vec();
     r_ba = b_akp1 - b_ak;
     r_bw = b_wkp1 - b_wk;
 
@@ -70,7 +70,7 @@ bool ImuCostFunction::Evaluate(const double *const *parameters, double *residual
         // t_w_bk
         if (jacobians[0])
         {
-            Eigen::Map<Eigen::Matrix<double, 18, 3, Eigen::RowMajor>> J_f_twbk(jacobians[0]);
+            Eigen::Map<Eigen::Matrix<double, 15, 3, Eigen::RowMajor>> J_f_twbk(jacobians[0]);
             J_f_twbk.setZero();
             J_f_twbk.block<3, 3>(0, 0) = -R_bk_w;
 
@@ -79,7 +79,7 @@ bool ImuCostFunction::Evaluate(const double *const *parameters, double *residual
         // v_w_bk
         if (jacobians[1])
         {
-            Eigen::Map<Eigen::Matrix<double, 18, 3, Eigen::RowMajor>> J_f_vwbk(jacobians[1]);
+            Eigen::Map<Eigen::Matrix<double, 15, 3, Eigen::RowMajor>> J_f_vwbk(jacobians[1]);
             J_f_vwbk.setZero();
             J_f_vwbk.block<3, 3>(0, 0) = -R_bk_w * dt_;
             J_f_vwbk.block<3, 3>(3, 0) = -R_bk_w;
@@ -89,21 +89,21 @@ bool ImuCostFunction::Evaluate(const double *const *parameters, double *residual
         // q_w_bk
         if (jacobians[2])
         {
-            const Eigen::Matrix4d product = quaternion_right(q_w_bkp1 * gamma_corrected.conjugate())
-                                            * quaternion_left(q_w_bk.conjugate());
+            const Eigen::Matrix4d product =
+                    quaternion_left(q_w_bkp1.conjugate()) * quaternion_right(q_w_bk * gamma_corrected);
 
-            Eigen::Map<Eigen::Matrix<double, 18, 4, Eigen::RowMajor>> J_f_qwbk(jacobians[2]);
+            Eigen::Map<Eigen::Matrix<double, 15, 4, Eigen::RowMajor>> J_f_qwbk(jacobians[2]);
             J_f_qwbk.setZero();
-            J_f_qwbk.block<3, 3>(0, 0) = skew(R_bk_w * (t_w_bkp1 - t_w_bk - 0.5 * g_ * dt_ * dt_ - v_w_bk * dt_));
-            J_f_qwbk.block<3, 3>(3, 0) = skew(R_bk_w * (v_w_bkp1 - g_ * dt_ - v_w_bk));
-            J_f_qwbk.block<3, 3>(6, 0) = -product.block<3, 3>(0, 0);
+            J_f_qwbk.block<3, 3>(0, 0) = R_bk_w * skew((t_w_bkp1 - t_w_bk - 0.5 * g_ * dt_ * dt_ - v_w_bk * dt_));
+            J_f_qwbk.block<3, 3>(3, 0) = R_bk_w * skew((v_w_bkp1 - g_ * dt_ - v_w_bk));
+            J_f_qwbk.block<3, 3>(6, 0) = product.block<3, 3>(0, 0);
 
             J_f_qwbk.block<15, 3>(0, 0) = information_sqrt_ * J_f_qwbk.block<15, 3>(0, 0);
         }
-
+        // b_ak
         if (jacobians[3])
         {
-            Eigen::Map<Eigen::Matrix<double, 18, 3, Eigen::RowMajor>> J_f_bak(jacobians[3]);
+            Eigen::Map<Eigen::Matrix<double, 15, 3, Eigen::RowMajor>> J_f_bak(jacobians[3]);
             J_f_bak.setZero();
             J_f_bak.block<3, 3>(0, 0) = -dalpha_dba;
             J_f_bak.block<3, 3>(3, 0) = -dbeta_dba;
@@ -111,64 +111,64 @@ bool ImuCostFunction::Evaluate(const double *const *parameters, double *residual
 
             J_f_bak.block<15, 3>(0, 0) = information_sqrt_ * J_f_bak.block<15, 3>(0, 0);
         }
-
+        // b_wk
         if (jacobians[4])
         {
             const Eigen::Matrix4d product =
-                    quaternion_left(q_w_bk.conjugate() * q_w_bkp1 * gamma_corrected.conjugate());
+                    quaternion_left(q_w_bkp1.conjugate() * q_w_bk) * quaternion_right(gamma_corrected);
 
-            Eigen::Map<Eigen::Matrix<double, 18, 3, Eigen::RowMajor>> J_f_bwk(jacobians[4]);
+            Eigen::Map<Eigen::Matrix<double, 15, 3, Eigen::RowMajor>> J_f_bwk(jacobians[4]);
             J_f_bwk.setZero();
             J_f_bwk.block<3, 3>(0, 0) = -dalpha_dbw;
             J_f_bwk.block<3, 3>(3, 0) = -dbeta_dbw;
-            J_f_bwk.block<3, 3>(6, 0) = -product.block<3, 3>(0, 0) * dgamma_dbw;
+            J_f_bwk.block<3, 3>(6, 0) = product.block<3, 3>(0, 0) * dgamma_dbw;
             J_f_bwk.block<3, 3>(12, 0) = -Eigen::Matrix3d::Identity();
 
             J_f_bwk.block<15, 3>(0, 0) = information_sqrt_ * J_f_bwk.block<15, 3>(0, 0);
         }
-
+        // t_w_bkp1
         if (jacobians[5])
         {
-            Eigen::Map<Eigen::Matrix<double, 18, 3, Eigen::RowMajor>> J_f_twbkp1(jacobians[5]);
+            Eigen::Map<Eigen::Matrix<double, 15, 3, Eigen::RowMajor>> J_f_twbkp1(jacobians[5]);
             J_f_twbkp1.setZero();
             J_f_twbkp1.block<3, 3>(0, 0) = R_bk_w;
 
             J_f_twbkp1.block<15, 3>(0, 0) = information_sqrt_ * J_f_twbkp1.block<15, 3>(0, 0);
         }
-
+        // v_w_bkp1
         if (jacobians[6])
         {
-            Eigen::Map<Eigen::Matrix<double, 18, 3, Eigen::RowMajor>> J_f_vwbkp1(jacobians[6]);
+            Eigen::Map<Eigen::Matrix<double, 15, 3, Eigen::RowMajor>> J_f_vwbkp1(jacobians[6]);
             J_f_vwbkp1.setZero();
             J_f_vwbkp1.block<3, 3>(3, 0) = R_bk_w;
 
             J_f_vwbkp1.block<15, 3>(0, 0) = information_sqrt_ * J_f_vwbkp1.block<15, 3>(0, 0);
         }
-
+        // q_w_bkp1
         if (jacobians[7])
         {
-            const Eigen::Matrix4d product = quaternion_left(q_w_bk.conjugate())
-                                            * quaternion_right(q_w_bkp1 * gamma_corrected.conjugate());
+            const Eigen::Matrix4d product = quaternion_left(q_w_bkp1.conjugate())
+                                            * quaternion_right(q_w_bk * gamma_corrected);
 
-            Eigen::Map<Eigen::Matrix<double, 18, 4, Eigen::RowMajor>> J_f_qwbkp1(jacobians[7]);
+            Eigen::Map<Eigen::Matrix<double, 15, 4, Eigen::RowMajor>> J_f_qwbkp1(jacobians[7]);
             J_f_qwbkp1.setZero();
-            J_f_qwbkp1.block<3, 3>(6, 0) = product.block<3, 3>(0, 0);
+            J_f_qwbkp1.block<3, 3>(6, 0) = -product.block<3, 3>(0, 0);
 
             J_f_qwbkp1.block<15, 3>(0, 0) = information_sqrt_ * J_f_qwbkp1.block<15, 3>(0, 0);
         }
-
+        // b_akp1
         if (jacobians[8])
         {
-            Eigen::Map<Eigen::Matrix<double, 18, 3, Eigen::RowMajor>> J_f_bakp1(jacobians[8]);
+            Eigen::Map<Eigen::Matrix<double, 15, 3, Eigen::RowMajor>> J_f_bakp1(jacobians[8]);
             J_f_bakp1.setZero();
             J_f_bakp1.block<3, 3>(9, 0) = Eigen::Matrix3d::Identity();
 
             J_f_bakp1.block<15, 3>(0, 0) = information_sqrt_ * J_f_bakp1.block<15, 3>(0, 0);
         }
-
+        // b_wkp1
         if (jacobians[9])
         {
-            Eigen::Map<Eigen::Matrix<double, 18, 3, Eigen::RowMajor>> J_f_bwkp1(jacobians[9]);
+            Eigen::Map<Eigen::Matrix<double, 15, 3, Eigen::RowMajor>> J_f_bwkp1(jacobians[9]);
             J_f_bwkp1.setZero();
             J_f_bwkp1.block<3, 3>(12, 0) = Eigen::Matrix3d::Identity();
 
